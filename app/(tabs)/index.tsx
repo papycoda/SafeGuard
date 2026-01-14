@@ -1,16 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Platform, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView } from 'expo-camera';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAlert } from '@/template';
 import { colors, spacing, typography } from '@/constants/theme';
-import { EmergencyButton, LocationDisplay, RecordingTimer } from '@/components';
+import { EmergencyButton, LocationDisplay, RecordingTimer, EmergencyServicesCard, VoiceIndicator } from '@/components';
 import { useRecording } from '@/hooks/useRecording';
 import { useLocation } from '@/hooks/useLocation';
 import { useSettings } from '@/hooks/useSettings';
+import { useVoiceCommands } from '@/hooks/useVoiceCommands';
+import { useEmergencyServices } from '@/hooks/useEmergencyServices';
 import { requestCameraPermission, requestMicrophonePermission } from '@/services/recordingService';
-import { sendSMSAlert, simulateSMSSent } from '@/services/alertService';
+import { sendSMSAlert, simulateSMSSent, createAlertMessage } from '@/services/alertService';
+import { getShareableMessage } from '@/services/cloudBackupService';
 
 export default function EmergencyScreen() {
   const insets = useSafeAreaInsets();
@@ -19,9 +22,26 @@ export default function EmergencyScreen() {
   const [hasPermissions, setHasPermissions] = useState(false);
   const [screenOff, setScreenOff] = useState(false);
 
-  const { isRecording, duration, cameraRef, startRecording, stopRecording } = useRecording();
+  const { isRecording, duration, cameraRef, isUploading, startRecording, stopRecording } = useRecording();
   const { location, isLoading: locationLoading, refreshLocation } = useLocation();
   const { settings } = useSettings();
+  const { emergencyNumber, isLoading: emergencyLoading, callEmergency, refresh: refreshEmergency } = useEmergencyServices(location || undefined);
+  
+  const { isListening, lastTranscript, hasPermission: hasVoicePermission } = useVoiceCommands({
+    triggerPhrases: settings?.triggerPhrases || [],
+    enabled: settings?.voiceActivation || false,
+    onTriggerDetected: (phrase) => {
+      if (!isRecording) {
+        showAlert('Voice Command Detected', `Trigger phrase: "${phrase}"`, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Start Recording', onPress: () => handleEmergencyPress() },
+        ]);
+      }
+    },
+    onError: (error) => {
+      console.error('Voice recognition error:', error);
+    },
+  });
 
   useEffect(() => {
     requestPermissions();
@@ -44,17 +64,46 @@ export default function EmergencyScreen() {
     }
 
     if (isRecording) {
-      const videoUri = await stopRecording();
+      const { localUri, cloudData } = await stopRecording(emergencyType, location || undefined);
       setScreenOff(false);
       
-      if (videoUri && settings?.emergencyContacts.length) {
-        const result = simulateSMSSent(settings.emergencyContacts);
-        showAlert(
-          'Recording Saved',
-          `Emergency alert sent to ${settings.emergencyContacts.length} contact(s)`
-        );
-      } else {
-        showAlert('Recording Saved', 'Add emergency contacts in Settings to send alerts');
+      if (localUri) {
+        let message = 'Recording saved locally';
+        
+        if (cloudData) {
+          message = `Recording uploaded to cloud. ${cloudData.url}`;
+          
+          if (settings?.emergencyContacts.length) {
+            const alert = {
+              type: emergencyType,
+              timestamp: Date.now(),
+              location: location || undefined,
+              videoUri: cloudData.url,
+            };
+            
+            simulateSMSSent(settings.emergencyContacts);
+            message += `\n\nAlert sent to ${settings.emergencyContacts.length} contact(s).`;
+          }
+          
+          showAlert('Recording Complete', message, [
+            { text: 'OK', style: 'default' },
+            {
+              text: 'Share',
+              onPress: async () => {
+                try {
+                  await Share.share({
+                    message: cloudData.url,
+                    title: 'Emergency Recording',
+                  });
+                } catch (error) {
+                  console.error('Error sharing:', error);
+                }
+              },
+            },
+          ]);
+        } else {
+          showAlert('Recording Saved Locally', message);
+        }
       }
     } else {
       const maxDuration = settings?.recordingDuration || 300;
@@ -172,14 +221,34 @@ export default function EmergencyScreen() {
         {isRecording && settings && (
           <View style={styles.statusSection}>
             <RecordingTimer duration={duration} maxDuration={settings.recordingDuration} />
+            {isUploading && (
+              <View style={styles.uploadingBadge}>
+                <MaterialIcons name="cloud-upload" size={16} color={colors.textPrimary} />
+                <Text style={styles.uploadingText}>Preparing cloud backup...</Text>
+              </View>
+            )}
           </View>
         )}
 
         <View style={styles.infoSection}>
+          {settings?.voiceActivation && (
+            <VoiceIndicator
+              isListening={isListening}
+              lastTranscript={lastTranscript}
+            />
+          )}
+
           <LocationDisplay
             location={location}
             isLoading={locationLoading}
             onRefresh={refreshLocation}
+          />
+
+          <EmergencyServicesCard
+            emergencyNumber={emergencyNumber}
+            isLoading={emergencyLoading}
+            onCallEmergency={callEmergency}
+            onRefresh={refreshEmergency}
           />
 
           <View style={styles.contactsInfo}>
@@ -343,5 +412,19 @@ const styles = StyleSheet.create({
   unlockText: {
     ...typography.label,
     color: colors.textPrimary,
+  },
+  uploadingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceLight,
+    borderRadius: 8,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  uploadingText: {
+    ...typography.caption,
+    color: colors.textPrimary,
+    marginLeft: spacing.sm,
   },
 });

@@ -1,11 +1,14 @@
 import { useState, useRef } from 'react';
 import { CameraView } from 'expo-camera';
 import { createRecordingSession, RecordingSession, saveRecording } from '@/services/recordingService';
+import { uploadVideoToCloud } from '@/services/cloudBackupService';
+import { LocationData } from '@/services/locationService';
 
 export function useRecording() {
   const [isRecording, setIsRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentSession, setCurrentSession] = useState<RecordingSession | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   
   const cameraRef = useRef<CameraView>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -43,7 +46,10 @@ export function useRecording() {
     }
   };
 
-  const stopRecording = async (): Promise<string | null> => {
+  const stopRecording = async (
+    emergencyType?: 'pulled_over' | 'danger',
+    location?: LocationData
+  ): Promise<{ localUri: string | null; cloudData: any }> => {
     try {
       if (timerRef.current) {
         clearInterval(timerRef.current);
@@ -58,17 +64,37 @@ export function useRecording() {
 
       if (recordingRef.current && currentSession) {
         const savedUri = await saveRecording(recordingRef.current.uri, currentSession.id);
+        const finalDuration = duration;
+        
         recordingRef.current = null;
         setCurrentSession(null);
         setDuration(0);
-        return savedUri;
+
+        let cloudData = null;
+        if (savedUri && emergencyType) {
+          setIsUploading(true);
+          cloudData = await uploadVideoToCloud(
+            savedUri,
+            emergencyType,
+            finalDuration,
+            location ? {
+              latitude: location.latitude,
+              longitude: location.longitude,
+              address: location.address,
+            } : undefined
+          );
+          setIsUploading(false);
+        }
+
+        return { localUri: savedUri, cloudData };
       }
 
-      return null;
+      return { localUri: null, cloudData: null };
     } catch (error) {
       console.error('Error stopping recording:', error);
       setIsRecording(false);
-      return null;
+      setIsUploading(false);
+      return { localUri: null, cloudData: null };
     }
   };
 
@@ -77,6 +103,7 @@ export function useRecording() {
     duration,
     currentSession,
     cameraRef,
+    isUploading,
     startRecording,
     stopRecording,
   };
