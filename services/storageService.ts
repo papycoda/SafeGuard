@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SecureStorageService, migrateToSecureStorage } from './secureStorageService';
 
 export interface EmergencyContact {
   id: string;
@@ -19,7 +20,11 @@ export interface AppSettings {
 const STORAGE_KEYS = {
   SETTINGS: 'app_settings',
   RECORDINGS: 'recordings_history',
+  MIGRATION_COMPLETE: 'secure_storage_migration_complete',
 };
+
+// Initialize secure storage migration on module load
+let migrationInProgress = false;
 
 const DEFAULT_SETTINGS: AppSettings = {
   recordingDuration: 300,
@@ -32,11 +37,20 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export async function getSettings(): Promise<AppSettings> {
   try {
-    const data = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (data) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
+    // Ensure migration is complete
+    if (!migrationInProgress) {
+      migrationInProgress = true;
+      await migrateToSecureStorage();
     }
-    return DEFAULT_SETTINGS;
+
+    const data = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
+    const settings: AppSettings = data
+      ? { ...DEFAULT_SETTINGS, ...JSON.parse(data) }
+      : { ...DEFAULT_SETTINGS };
+
+    // Get emergency contacts from secure storage
+    const secureContacts = await SecureStorageService.getEmergencyContacts();
+    return { ...settings, emergencyContacts: secureContacts };
   } catch (error) {
     console.error('Error loading settings:', error);
     return DEFAULT_SETTINGS;
@@ -47,7 +61,15 @@ export async function saveSettings(settings: Partial<AppSettings>): Promise<void
   try {
     const current = await getSettings();
     const updated = { ...current, ...settings };
-    await AsyncStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+
+    // Save emergency contacts to secure storage
+    if (settings.emergencyContacts) {
+      await SecureStorageService.saveEmergencyContacts(updated.emergencyContacts);
+    }
+
+    // Save other settings to AsyncStorage
+    const { emergencyContacts, ...otherSettings } = updated;
+    await AsyncStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(otherSettings));
   } catch (error) {
     console.error('Error saving settings:', error);
     throw error;

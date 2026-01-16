@@ -5,6 +5,7 @@ import { useAlert } from '@/template';
 import { colors, spacing } from '@/constants/theme';
 import { Button, Input } from '@/components';
 import { useSettings } from '@/hooks/useSettings';
+import { ValidationService } from '@/services/validationService';
 
 export default function AddContactScreen() {
   const router = useRouter();
@@ -24,17 +25,27 @@ export default function AddContactScreen() {
     const newErrors = { name: '', phone: '' };
     let isValid = true;
 
-    if (!name.trim()) {
-      newErrors.name = 'Name is required';
+    // Validate name using ValidationService
+    const nameResult = ValidationService.validateName(name);
+    if (!nameResult.isValid) {
+      newErrors.name = nameResult.error || 'Invalid name';
       isValid = false;
     }
 
-    if (!phone.trim()) {
-      newErrors.phone = 'Phone number is required';
+    // Validate phone using ValidationService
+    const phoneResult = ValidationService.validatePhoneNumber(phone);
+    if (!phoneResult.isValid) {
+      newErrors.phone = phoneResult.error || 'Invalid phone number';
       isValid = false;
-    } else if (!/^\+?[\d\s-()]+$/.test(phone)) {
-      newErrors.phone = 'Invalid phone number format';
-      isValid = false;
+    }
+
+    // Validate relationship if provided
+    if (relationship.trim()) {
+      const relationshipResult = ValidationService.validateRelationship(relationship);
+      if (!relationshipResult.isValid) {
+        // Relationship validation failed, but it's optional so we don't block
+        // However, we should sanitize it later
+      }
     }
 
     setErrors(newErrors);
@@ -45,13 +56,18 @@ export default function AddContactScreen() {
     if (!validateForm()) return;
 
     try {
+      // Get sanitized values from validation service
+      const nameResult = ValidationService.validateName(name);
+      const phoneResult = ValidationService.validatePhoneNumber(phone);
+      const relationshipResult = ValidationService.validateRelationship(relationship);
+
       await addContact({
-        name: name.trim(),
-        phone: phone.trim(),
-        relationship: relationship.trim() || undefined,
+        name: nameResult.sanitizedValue || name.trim(),
+        phone: phoneResult.sanitizedValue || phone.trim(),
+        relationship: relationshipResult.sanitizedValue || relationship.trim() || undefined,
       });
 
-      showAlert('Contact Added', `${name} has been added to emergency contacts`);
+      showAlert('Contact Added', `${nameResult.sanitizedValue || name} has been added to emergency contacts`);
       router.back();
     } catch (error) {
       showAlert('Error', 'Could not add contact. Please try again.');
